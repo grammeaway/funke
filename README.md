@@ -1,5 +1,6 @@
 # Fünke 
 ![Tobias Fünke, who just "blue" himself](./docs/bluemyself.jpg)
+
 A lightweight, TUI bluetooth manager, written in Rust. Manage connections, pair devices, and more.
 
 ## Features
