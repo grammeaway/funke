@@ -10,3 +10,9 @@ A lightweight, TUI bluetooth manager, written in Rust. Manage connections, pair 
 - Pair and unpair devices
 - View connection status
 - Switch audio and input profiles
+
+## Installation
+*TODO*
+
+## AI Usage Disclosure 
+This project was developed with the assistance of AI tools, specifically Claude Code managed through a Ralph loop. 
