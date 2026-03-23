@@ -14,5 +14,11 @@ A lightweight, TUI bluetooth manager, written in Rust. Manage connections, pair 
 ## Installation
 *TODO*
 
+## TODO / Roadmap
+
+- Fünke CLI, for people who prefer command line tools
+
+- Automate new releases with GitHub Actions
+
 ## AI Usage Disclosure 
 This project was developed with the assistance of AI tools, specifically Claude Code managed through a Ralph loop. 
