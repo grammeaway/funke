@@ -535,8 +535,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 .block(device_block)
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::White)
+                        .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("▸ ");
