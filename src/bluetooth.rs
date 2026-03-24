@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::process::Stdio;
 
+use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::Connection;
@@ -549,6 +551,24 @@ pub async fn power_off_adapter(connection: &Connection) -> Result<(), zbus::Erro
         .build()
         .await?;
     proxy.set_powered(false).await
+}
+
+/// Unblock the Bluetooth adapter via rfkill.
+pub async fn rfkill_unblock_bluetooth() -> Result<(), String> {
+    let output = Command::new("rfkill")
+        .args(["unblock", "bluetooth"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run rfkill: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("rfkill unblock failed: {}", stderr.trim()));
+    }
+
+    Ok(())
 }
 
 /// Connect to the system D-Bus.

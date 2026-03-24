@@ -242,7 +242,7 @@ impl App {
             };
         }
 
-        // If no adapter is present, only allow quit and help
+        // If no adapter is present, only allow quit, help, and power on
         if self.adapter.is_none() {
             return match key.code {
                 KeyCode::Char('q') => {
@@ -254,6 +254,7 @@ impl App {
                     Action::None
                 }
                 KeyCode::Char('?') => Action::ToggleHelp,
+                KeyCode::Char('o') => Action::PowerOn,
                 _ => Action::None,
             };
         }
@@ -442,7 +443,7 @@ fn format_device_line(device: &DeviceInfo, discovered: bool) -> String {
 /// Build context-sensitive help bar text based on the selected device's state.
 fn help_bar_text(app: &App) -> String {
     if app.adapter.is_none() {
-        return "q: Quit | ?: Help | Waiting for adapter...".to_string();
+        return "q: Quit | o: Unblock Adapter | ?: Help".to_string();
     }
 
     if let Some(adapter) = &app.adapter
@@ -498,7 +499,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         None => {
             let no_adapter_list = List::new(vec![
                 ListItem::new("No Bluetooth adapter found"),
-                ListItem::new("Waiting for adapter..."),
+                ListItem::new("Press 'o' to unblock via rfkill"),
             ])
             .block(device_block);
             frame.render_widget(no_adapter_list, chunks[0]);
@@ -1087,20 +1088,40 @@ pub async fn run(
                         app.show_help = false;
                     }
                     Action::PowerOn => {
-                        let conn = connection.clone();
-                        let tx = op_tx.clone();
-                        tokio::spawn(async move {
-                            match bluetooth::power_on_adapter(&conn).await {
-                                Ok(()) => {
-                                    let _ = tx.send(DeviceOpResult::AdapterPoweredOn);
+                        if app.adapter.is_none() {
+                            // No adapter present — try rfkill unblock to enable it
+                            let tx = op_tx.clone();
+                            tokio::spawn(async move {
+                                match bluetooth::rfkill_unblock_bluetooth().await {
+                                    Ok(()) => {
+                                        let _ = tx.send(DeviceOpResult::Error {
+                                            message: "Unblocked bluetooth, waiting for adapter...".to_string(),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(DeviceOpResult::Error {
+                                            message: e,
+                                        });
+                                    }
                                 }
-                                Err(e) => {
-                                    let _ = tx.send(DeviceOpResult::Error {
-                                        message: format!("Power on failed: {e}"),
-                                    });
+                            });
+                        } else {
+                            // Adapter exists but is powered off — power on via D-Bus
+                            let conn = connection.clone();
+                            let tx = op_tx.clone();
+                            tokio::spawn(async move {
+                                match bluetooth::power_on_adapter(&conn).await {
+                                    Ok(()) => {
+                                        let _ = tx.send(DeviceOpResult::AdapterPoweredOn);
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(DeviceOpResult::Error {
+                                            message: format!("Power on failed: {e}"),
+                                        });
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
                     Action::PowerOff => {
                         let conn = connection.clone();
@@ -2873,14 +2894,15 @@ mod tests {
     }
 
     #[test]
-    fn test_draw_no_adapter_shows_waiting() {
+    #[test]
+    fn test_draw_no_adapter_shows_unblock_hint() {
         let mut app = App::new(None, vec![]);
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let content = buffer_content(terminal.backend());
-        assert!(content.contains("Waiting for adapter"));
+        assert!(content.contains("unblock via rfkill"));
     }
 
     #[test]
@@ -2921,10 +2943,11 @@ mod tests {
     }
 
     #[test]
-    fn test_key_handling_no_adapter_blocks_power() {
+    #[test]
+    fn test_key_handling_no_adapter_power_on() {
         let mut app = App::new(None, vec![]);
         let action = app.handle_key(make_key(KeyCode::Char('o'), KeyModifiers::NONE));
-        assert_eq!(action, Action::None);
+        assert_eq!(action, Action::PowerOn);
     }
 
     #[test]
@@ -2933,7 +2956,7 @@ mod tests {
         let text = help_bar_text(&app);
         assert!(text.contains("Quit"));
         assert!(text.contains("Help"));
-        assert!(text.contains("Waiting for adapter"));
+        assert!(text.contains("Unblock Adapter"));
     }
 
     #[test]
