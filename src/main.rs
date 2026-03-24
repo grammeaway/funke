@@ -2,7 +2,7 @@ mod audio;
 mod bluetooth;
 mod tui;
 
-use bluetooth::{connect_system_dbus, get_adapter_info, get_known_devices};
+use bluetooth::{connect_system_dbus, get_known_devices, try_get_adapter_info};
 
 #[tokio::main]
 async fn main() {
@@ -23,31 +23,40 @@ async fn main() {
         }
     };
 
-    let adapter = match get_adapter_info(&connection).await {
-        Ok(info) => info,
+    let adapter = match try_get_adapter_info(&connection).await {
+        Ok(info) => info, // Some(adapter) or None
         Err(e) => {
-            eprintln!("Error: Could not find a Bluetooth adapter: {e}");
+            eprintln!("Error: Could not query Bluetooth adapter: {e}");
             eprintln!("Make sure BlueZ is installed and the bluetooth service is running.");
             std::process::exit(1);
         }
     };
 
-    let devices = match get_known_devices(&connection).await {
-        Ok(devs) => devs,
-        Err(e) => {
-            eprintln!("Failed to fetch known devices: {e}");
-            std::process::exit(1);
+    let devices = if adapter.is_some() {
+        match get_known_devices(&connection).await {
+            Ok(devs) => devs,
+            Err(e) => {
+                eprintln!("Failed to fetch known devices: {e}");
+                std::process::exit(1);
+            }
         }
+    } else {
+        Vec::new()
     };
 
-    // Register the BlueZ pairing agent
+    // Register the BlueZ pairing agent (may fail if adapter is absent)
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
-    if let Err(e) = bluetooth::register_agent(&connection, agent_tx).await {
-        eprintln!("Failed to register pairing agent: {e}");
-        std::process::exit(1);
-    }
+    let agent_registered = if adapter.is_some() {
+        if let Err(e) = bluetooth::register_agent(&connection, agent_tx.clone()).await {
+            eprintln!("Failed to register pairing agent: {e}");
+            std::process::exit(1);
+        }
+        true
+    } else {
+        false
+    };
 
-    let result = tui::run(adapter, devices, connection.clone(), agent_rx).await;
+    let result = tui::run(adapter, devices, connection.clone(), agent_rx, agent_tx, agent_registered).await;
 
     // Unregister the pairing agent on exit
     let _ = bluetooth::unregister_agent(&connection).await;

@@ -307,6 +307,40 @@ pub async fn get_adapter_info(connection: &Connection) -> Result<AdapterInfo, zb
     Ok(AdapterInfo { name, address, powered })
 }
 
+/// Returns true if the error indicates the adapter D-Bus object does not exist.
+fn is_adapter_missing(e: &zbus::Error) -> bool {
+    match e {
+        zbus::Error::MethodError(name, _, _) => {
+            let s = name.as_str();
+            s == "org.freedesktop.DBus.Error.UnknownObject"
+                || s == "org.freedesktop.DBus.Error.ServiceUnknown"
+        }
+        zbus::Error::FDO(fdo) => matches!(
+            fdo.as_ref(),
+            zbus::fdo::Error::UnknownObject(_)
+                | zbus::fdo::Error::ServiceUnknown(_)
+                | zbus::fdo::Error::UnknownInterface(_)
+        ),
+        // InterfaceNotFound can occur when BlueZ hasn't registered the adapter
+        zbus::Error::InterfaceNotFound => true,
+        // Fallback: check the Display string for known D-Bus error names
+        e => {
+            let msg = e.to_string();
+            msg.contains("UnknownObject") || msg.contains("ServiceUnknown")
+        }
+    }
+}
+
+/// Try to retrieve BlueZ adapter info, returning `None` if the adapter
+/// D-Bus object does not exist (e.g. adapter hardware is off).
+pub async fn try_get_adapter_info(connection: &Connection) -> Result<Option<AdapterInfo>, zbus::Error> {
+    match get_adapter_info(connection).await {
+        Ok(info) => Ok(Some(info)),
+        Err(e) if is_adapter_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Fetch known (previously paired) devices from BlueZ via ObjectManager.
 pub async fn get_known_devices(connection: &Connection) -> Result<Vec<DeviceInfo>, zbus::Error> {
     let proxy = ObjectManagerProxy::builder(connection)

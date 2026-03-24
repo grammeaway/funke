@@ -87,6 +87,7 @@ pub enum DeviceOpResult {
     Untrusted { address: String, name: String },
     ProfilesLoaded { address: String, name: String, profiles: Vec<AudioProfile> },
     ProfileSwitched { name: String, profile: String },
+    AdapterFound { adapter: AdapterInfo },
     AdapterPoweredOn,
     AdapterPoweredOff,
     Error { message: String },
@@ -110,7 +111,7 @@ pub struct PendingConfirm {
 
 /// Application state for the TUI.
 pub struct App {
-    pub adapter: AdapterInfo,
+    pub adapter: Option<AdapterInfo>,
     pub devices: Vec<DeviceInfo>,
     pub discovered_devices: Vec<DeviceInfo>,
     pub list_state: ListState,
@@ -125,7 +126,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(adapter: AdapterInfo, devices: Vec<DeviceInfo>) -> Self {
+    pub fn new(adapter: Option<AdapterInfo>, devices: Vec<DeviceInfo>) -> Self {
         let mut list_state = ListState::default();
         if !devices.is_empty() {
             list_state.select(Some(0));
@@ -241,6 +242,22 @@ impl App {
             };
         }
 
+        // If no adapter is present, only allow quit and help
+        if self.adapter.is_none() {
+            return match key.code {
+                KeyCode::Char('q') => {
+                    self.running = false;
+                    Action::None
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.running = false;
+                    Action::None
+                }
+                KeyCode::Char('?') => Action::ToggleHelp,
+                _ => Action::None,
+            };
+        }
+
         match key.code {
             KeyCode::Char('q') => {
                 self.running = false;
@@ -258,7 +275,7 @@ impl App {
             KeyCode::Char('a') => Action::OpenProfiles,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('o') => {
-                if self.adapter.powered {
+                if self.adapter.as_ref().is_some_and(|a| a.powered) {
                     Action::PowerOff
                 } else {
                     Action::PowerOn
@@ -424,7 +441,13 @@ fn format_device_line(device: &DeviceInfo, discovered: bool) -> String {
 
 /// Build context-sensitive help bar text based on the selected device's state.
 fn help_bar_text(app: &App) -> String {
-    if !app.adapter.powered {
+    if app.adapter.is_none() {
+        return "q: Quit | ?: Help | Waiting for adapter...".to_string();
+    }
+
+    if let Some(adapter) = &app.adapter
+        && !adapter.powered
+    {
         return "q: Quit | o: Power On | ?: Help".to_string();
     }
 
@@ -471,41 +494,53 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     let has_devices = !app.devices.is_empty() || !app.discovered_devices.is_empty();
 
-    if !app.adapter.powered {
-        let off_list = List::new(vec![
-            ListItem::new("Bluetooth adapter is powered off"),
-            ListItem::new("Press 'o' to power on"),
-        ])
-        .block(device_block);
-        frame.render_widget(off_list, chunks[0]);
-    } else if !has_devices {
-        let empty_list = List::new(vec![ListItem::new("No devices")])
+    match &app.adapter {
+        None => {
+            let no_adapter_list = List::new(vec![
+                ListItem::new("No Bluetooth adapter found"),
+                ListItem::new("Waiting for adapter..."),
+            ])
             .block(device_block);
-        frame.render_widget(empty_list, chunks[0]);
-    } else {
-        let mut items: Vec<ListItem> = app
-            .devices
-            .iter()
-            .map(|d| ListItem::new(format_device_line(d, false)))
-            .collect();
-
-        for d in &app.discovered_devices {
-            items.push(
-                ListItem::new(format_device_line(d, true))
-                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-            );
+            frame.render_widget(no_adapter_list, chunks[0]);
         }
+        Some(adapter) if !adapter.powered => {
+            let off_list = List::new(vec![
+                ListItem::new("Bluetooth adapter is powered off"),
+                ListItem::new("Press 'o' to power on"),
+            ])
+            .block(device_block);
+            frame.render_widget(off_list, chunks[0]);
+        }
+        _ if !has_devices => {
+            let empty_list = List::new(vec![ListItem::new("No devices")])
+                .block(device_block);
+            frame.render_widget(empty_list, chunks[0]);
+        }
+        _ => {
+            let mut items: Vec<ListItem> = app
+                .devices
+                .iter()
+                .map(|d| ListItem::new(format_device_line(d, false)))
+                .collect();
 
-        let list = List::new(items)
-            .block(device_block)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▸ ");
-        frame.render_stateful_widget(list, chunks[0], &mut app.list_state);
+            for d in &app.discovered_devices {
+                items.push(
+                    ListItem::new(format_device_line(d, true))
+                        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                );
+            }
+
+            let list = List::new(items)
+                .block(device_block)
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▸ ");
+            frame.render_stateful_widget(list, chunks[0], &mut app.list_state);
+        }
     }
 
     // Confirmation dialog overlay
@@ -742,16 +777,24 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(help_bar, chunks[1]);
 
     // Status bar
-    let power_state = if app.adapter.powered { "ON" } else { "OFF" };
-    let scan_indicator = if app.scanning { " | Scanning..." } else { "" };
-    let msg_indicator = match &app.status_message {
-        Some(msg) => format!(" | {msg}"),
-        None => String::new(),
+    let status_text = if let Some(adapter) = &app.adapter {
+        let power_state = if adapter.powered { "ON" } else { "OFF" };
+        let scan_indicator = if app.scanning { " | Scanning..." } else { "" };
+        let msg_indicator = match &app.status_message {
+            Some(msg) => format!(" | {msg}"),
+            None => String::new(),
+        };
+        format!(
+            " {} ({}) | Power: {}{}{}",
+            adapter.name, adapter.address, power_state, scan_indicator, msg_indicator
+        )
+    } else {
+        let msg_indicator = match &app.status_message {
+            Some(msg) => format!(" | {msg}"),
+            None => String::new(),
+        };
+        format!(" No adapter{msg_indicator}")
     };
-    let status_text = format!(
-        " {} ({}) | Power: {}{}{}",
-        app.adapter.name, app.adapter.address, power_state, scan_indicator, msg_indicator
-    );
     let status_bar = ratatui::widgets::Paragraph::new(Line::from(status_text))
         .style(Style::default().fg(Color::White).bg(Color::DarkGray));
     frame.render_widget(status_bar, chunks[2]);
@@ -759,13 +802,16 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
 /// Run the main TUI event loop.
 pub async fn run(
-    adapter: AdapterInfo,
+    adapter: Option<AdapterInfo>,
     devices: Vec<DeviceInfo>,
     connection: Connection,
     mut agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentRequest>,
+    agent_tx: tokio::sync::mpsc::UnboundedSender<AgentRequest>,
+    mut agent_registered: bool,
 ) -> io::Result<()> {
     let mut terminal = init_terminal()?;
     let mut app = App::new(adapter, devices);
+    let mut adapter_retry_counter: u32 = 0;
 
     // Channel for discovered devices from D-Bus signals
     let (disc_tx, mut disc_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1153,8 +1199,27 @@ pub async fn run(
                     DeviceOpResult::ProfileSwitched { name, profile } => {
                         app.status_message = Some(format!("Switched {name} to {profile}"));
                     }
+                    DeviceOpResult::AdapterFound { adapter } => {
+                        app.adapter = Some(adapter);
+                        // Fetch known devices now that adapter is available
+                        if let Ok(devs) = bluetooth::get_known_devices(&connection).await {
+                            app.devices = devs;
+                            if !app.devices.is_empty() && app.list_state.selected().is_none() {
+                                app.list_state.select(Some(0));
+                            }
+                        }
+                        // Register the pairing agent if not already registered
+                        if !agent_registered
+                            && bluetooth::register_agent(&connection, agent_tx.clone()).await.is_ok()
+                        {
+                            agent_registered = true;
+                        }
+                        app.status_message = Some("Adapter found".to_string());
+                    }
                     DeviceOpResult::AdapterPoweredOn => {
-                        app.adapter.powered = true;
+                        if let Some(adapter) = &mut app.adapter {
+                            adapter.powered = true;
+                        }
                         // Refresh device list now that adapter is on
                         if let Ok(devs) = bluetooth::get_known_devices(&connection).await {
                             app.devices = devs;
@@ -1165,7 +1230,9 @@ pub async fn run(
                         app.status_message = Some("Adapter powered on".to_string());
                     }
                     DeviceOpResult::AdapterPoweredOff => {
-                        app.adapter.powered = false;
+                        if let Some(adapter) = &mut app.adapter {
+                            adapter.powered = false;
+                        }
                         app.scanning = false;
                         app.devices.clear();
                         app.discovered_devices.clear();
@@ -1231,7 +1298,18 @@ pub async fn run(
                     }
                 }
             }
-            _ = tick.tick() => {}
+            _ = tick.tick() => {
+                // Periodically retry adapter detection when no adapter is present
+                if app.adapter.is_none() {
+                    adapter_retry_counter += 1;
+                    if adapter_retry_counter >= 20 {
+                        adapter_retry_counter = 0;
+                        if let Ok(Some(adapter)) = bluetooth::try_get_adapter_info(&connection).await {
+                            let _ = op_tx.send(DeviceOpResult::AdapterFound { adapter });
+                        }
+                    }
+                }
+            }
         }
 
         if !app.running {
@@ -1254,12 +1332,12 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEventKind, KeyEventState};
 
-    fn test_adapter() -> AdapterInfo {
-        AdapterInfo {
+    fn test_adapter() -> Option<AdapterInfo> {
+        Some(AdapterInfo {
             name: "hci0".to_string(),
             address: "AA:BB:CC:DD:EE:FF".to_string(),
             powered: true,
-        }
+        })
     }
 
     fn test_devices() -> Vec<DeviceInfo> {
@@ -1318,7 +1396,7 @@ mod tests {
         assert!(app.running);
         assert!(!app.scanning);
         assert!(app.discovered_devices.is_empty());
-        assert_eq!(app.adapter.name, "hci0");
+        assert_eq!(app.adapter.as_ref().unwrap().name, "hci0");
         assert_eq!(app.devices.len(), 3);
         assert_eq!(app.list_state.selected(), Some(0));
     }
@@ -1641,7 +1719,7 @@ mod tests {
     #[test]
     fn test_draw_powered_off() {
         let mut adapter = test_adapter();
-        adapter.powered = false;
+        adapter.as_mut().unwrap().powered = false;
         let mut app = App::new(adapter, vec![]);
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2634,12 +2712,12 @@ mod tests {
 
     // --- US-012: Error Handling and Resilience ---
 
-    fn test_adapter_powered_off() -> AdapterInfo {
-        AdapterInfo {
+    fn test_adapter_powered_off() -> Option<AdapterInfo> {
+        Some(AdapterInfo {
             name: "hci0".to_string(),
             address: "AA:BB:CC:DD:EE:FF".to_string(),
             powered: false,
-        }
+        })
     }
 
     #[test]
@@ -2700,9 +2778,9 @@ mod tests {
     #[test]
     fn test_adapter_powered_on_updates_state() {
         let mut app = App::new(test_adapter_powered_off(), vec![]);
-        assert!(!app.adapter.powered);
-        app.adapter.powered = true;
-        assert!(app.adapter.powered);
+        assert!(!app.adapter.as_ref().unwrap().powered);
+        app.adapter.as_mut().unwrap().powered = true;
+        assert!(app.adapter.as_ref().unwrap().powered);
     }
 
     #[test]
@@ -2743,17 +2821,17 @@ mod tests {
     #[test]
     fn test_adapter_powered_off_clears_state() {
         let mut app = App::new(test_adapter(), test_devices());
-        assert!(app.adapter.powered);
+        assert!(app.adapter.as_ref().unwrap().powered);
         assert!(!app.devices.is_empty());
 
         // Simulate power-off result
-        app.adapter.powered = false;
+        app.adapter.as_mut().unwrap().powered = false;
         app.scanning = false;
         app.devices.clear();
         app.discovered_devices.clear();
         app.list_state.select(None);
 
-        assert!(!app.adapter.powered);
+        assert!(!app.adapter.as_ref().unwrap().powered);
         assert!(app.devices.is_empty());
         assert!(app.discovered_devices.is_empty());
         assert!(!app.scanning);
@@ -2770,5 +2848,124 @@ mod tests {
 
         let content = buffer_content(terminal.backend());
         assert!(content.contains("Connection failed"));
+    }
+
+    // --- No-adapter tests ---
+
+    #[test]
+    fn test_app_new_no_adapter() {
+        let app = App::new(None, vec![]);
+        assert!(app.adapter.is_none());
+        assert!(app.devices.is_empty());
+        assert!(app.running);
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_draw_no_adapter_shows_message() {
+        let mut app = App::new(None, vec![]);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains("No Bluetooth adapter found"));
+    }
+
+    #[test]
+    fn test_draw_no_adapter_shows_waiting() {
+        let mut app = App::new(None, vec![]);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains("Waiting for adapter"));
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_quit() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!app.running);
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_ctrl_c() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.running);
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_help() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert_eq!(action, Action::ToggleHelp);
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_blocks_scan() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_blocks_connect() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn test_key_handling_no_adapter_blocks_power() {
+        let mut app = App::new(None, vec![]);
+        let action = app.handle_key(make_key(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn test_help_bar_no_adapter() {
+        let app = App::new(None, vec![]);
+        let text = help_bar_text(&app);
+        assert!(text.contains("Quit"));
+        assert!(text.contains("Help"));
+        assert!(text.contains("Waiting for adapter"));
+    }
+
+    #[test]
+    fn test_status_bar_no_adapter() {
+        let mut app = App::new(None, vec![]);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains("No adapter"));
+    }
+
+    #[test]
+    fn test_adapter_found_updates_state() {
+        let mut app = App::new(None, vec![]);
+        assert!(app.adapter.is_none());
+
+        // Simulate adapter being found
+        app.adapter = Some(AdapterInfo {
+            name: "hci0".to_string(),
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            powered: true,
+        });
+        app.status_message = Some("Adapter found".to_string());
+
+        assert!(app.adapter.is_some());
+        assert!(app.adapter.as_ref().unwrap().powered);
+        assert_eq!(app.status_message, Some("Adapter found".to_string()));
+
+        // Now keys should work normally
+        let action = app.handle_key(make_key(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(action, Action::ToggleScan);
     }
 }
