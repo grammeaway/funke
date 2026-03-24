@@ -20,7 +20,5 @@ A lightweight, TUI bluetooth manager, written in Rust. Manage connections, pair 
 
 - [ ] Automate new releases with GitHub Actions
 
-- [x] Allow launch when adapter is off, with automatic adapter detection when it becomes available
-
 ## AI Usage Disclosure 
 This project was developed with the assistance of AI tools, specifically Claude Code managed through a Ralph loop. 
