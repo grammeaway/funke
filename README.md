@@ -3,6 +3,8 @@
 
 A lightweight, TUI bluetooth manager, written in Rust. Manage connections, pair devices, and more.
 
+TUI built using [ratatui](https://github.com/ratatui/ratatui).
+
 ## Features
 ![TUI preview](./docs/preview.png)
 - List available Bluetooth devices
