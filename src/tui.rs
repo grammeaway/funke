@@ -192,7 +192,7 @@ impl App {
         // If profile menu is active, handle profile-specific input
         if let Some(menu) = &mut self.profile_menu {
             return match key.code {
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     if menu.selected > 0 {
                         menu.selected -= 1;
                     } else {
@@ -200,12 +200,20 @@ impl App {
                     }
                     Action::None
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     if menu.selected + 1 < menu.profiles.len() {
                         menu.selected += 1;
                     } else {
                         menu.selected = 0;
                     }
+                    Action::None
+                }
+                KeyCode::Char('g') => {
+                    menu.selected = 0;
+                    Action::None
+                }
+                KeyCode::Char('G') => {
+                    menu.selected = menu.profiles.len().saturating_sub(1);
                     Action::None
                 }
                 KeyCode::Enter => Action::SelectProfile,
@@ -283,12 +291,20 @@ impl App {
                 }
             }
             KeyCode::Enter => Action::ConnectToggle,
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.select_previous();
                 Action::None
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
+                Action::None
+            }
+            KeyCode::Char('g') => {
+                self.select_first();
+                Action::None
+            }
+            KeyCode::Char('G') => {
+                self.select_last();
                 Action::None
             }
             _ => Action::None,
@@ -318,6 +334,19 @@ impl App {
             Some(i) => i - 1,
         };
         self.list_state.select(Some(i));
+    }
+
+    fn select_first(&mut self) {
+        if self.total_devices() > 0 {
+            self.list_state.select(Some(0));
+        }
+    }
+
+    fn select_last(&mut self) {
+        let total = self.total_devices();
+        if total > 0 {
+            self.list_state.select(Some(total - 1));
+        }
     }
 
     /// Add a discovered device, deduplicating against known and already-discovered devices.
@@ -739,7 +768,8 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Line::from("  i            Device details"),
             Line::from("  a            Audio profiles"),
             Line::from("  o            Toggle adapter power"),
-            Line::from("  Up/Down      Navigate device list"),
+            Line::from("  j/k or Up/Down  Navigate device list"),
+            Line::from("  g / G        Jump to first / last"),
             Line::from("  ?            Toggle this help"),
             Line::from("  Esc          Close overlay / Cancel"),
             Line::from(""),
@@ -1564,6 +1594,57 @@ mod tests {
     }
 
     #[test]
+    fn test_j_navigates_down() {
+        let mut app = App::new(test_adapter(), test_devices());
+        assert_eq!(app.list_state.selected(), Some(0));
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(1));
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(2));
+        // Wraps around like Down
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_k_navigates_up() {
+        let mut app = App::new(test_adapter(), test_devices());
+        assert_eq!(app.list_state.selected(), Some(0));
+        // Wraps to last like Up
+        app.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(2));
+        app.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_g_jumps_to_first() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.list_state.select(Some(2));
+        app.handle_key(make_key(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_capital_g_jumps_to_last() {
+        let mut app = App::new(test_adapter(), test_devices());
+        assert_eq!(app.list_state.selected(), Some(0));
+        app.handle_key(make_key(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.list_state.selected(), Some(app.total_devices() - 1));
+    }
+
+    #[test]
+    fn test_j_empty_list_no_panic() {
+        let mut app = App::new(test_adapter(), vec![]);
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), None);
+        app.handle_key(make_key(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), None);
+        app.handle_key(make_key(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[test]
     fn test_navigate_includes_discovered_devices() {
         let mut app = App::new(test_adapter(), test_devices());
         app.add_discovered_device(DeviceInfo {
@@ -2044,6 +2125,34 @@ mod tests {
         if let Some(AgentPrompt::PinCode { input, .. }) = &app.agent_prompt {
             assert_eq!(input, "123");
         }
+    }
+
+    #[test]
+    fn test_vim_keys_are_literal_in_agent_pin_input() {
+        // Guards the modal-priority invariant: while an agent PIN prompt
+        // is active, j/k/g/G must land in the input buffer and must not
+        // move the device-list selection.
+        let mut app = App::new(test_adapter(), test_devices());
+        app.list_state.select(Some(1));
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        app.agent_prompt = Some(AgentPrompt::PinCode {
+            device: "test".to_string(),
+            input: String::new(),
+            reply: tx,
+        });
+
+        app.handle_key(make_key(KeyCode::Char('g'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('G'), KeyModifiers::SHIFT));
+
+        if let Some(AgentPrompt::PinCode { input, .. }) = &app.agent_prompt {
+            assert_eq!(input, "gjkG");
+        } else {
+            panic!("Expected PinCode prompt");
+        }
+        // Selection must be unchanged.
+        assert_eq!(app.list_state.selected(), Some(1));
     }
 
     #[test]
@@ -2537,6 +2646,25 @@ mod tests {
 
         app.handle_key(make_key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.profile_menu.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn test_profile_menu_j_navigates_down() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.profile_menu = Some(test_profile_menu());
+
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.profile_menu.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn test_profile_menu_capital_g_jumps_to_last() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.profile_menu = Some(test_profile_menu());
+        // selected starts at 0
+        app.handle_key(make_key(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        let menu = app.profile_menu.as_ref().unwrap();
+        assert_eq!(menu.selected, menu.profiles.len() - 1);
     }
 
     #[test]
