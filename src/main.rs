@@ -4,8 +4,31 @@ mod tui;
 
 use bluetooth::{connect_system_dbus, get_known_devices, try_get_adapter_info};
 
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    RunTui,
+    PrintVersion,
+}
+
+fn parse_cli<S: AsRef<str>>(args: &[S]) -> CliAction {
+    match args.get(1).map(|s| s.as_ref()) {
+        Some("version") | Some("--version") | Some("-V") => CliAction::PrintVersion,
+        _ => CliAction::RunTui,
+    }
+}
+
+fn version_string() -> String {
+    format!("funke {}", env!("CARGO_PKG_VERSION"))
+}
+
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if parse_cli(&args) == CliAction::PrintVersion {
+        println!("{}", version_string());
+        return;
+    }
+
     // Install a panic hook that restores the terminal before printing the panic.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -64,5 +87,50 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("TUI error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cli_no_args() {
+        let args = vec!["funke"];
+        assert_eq!(parse_cli(&args), CliAction::RunTui);
+    }
+
+    #[test]
+    fn test_parse_cli_version_subcommand() {
+        let args = vec!["funke", "version"];
+        assert_eq!(parse_cli(&args), CliAction::PrintVersion);
+    }
+
+    #[test]
+    fn test_parse_cli_double_dash_version() {
+        let args = vec!["funke", "--version"];
+        assert_eq!(parse_cli(&args), CliAction::PrintVersion);
+    }
+
+    #[test]
+    fn test_parse_cli_short_v() {
+        let args = vec!["funke", "-V"];
+        assert_eq!(parse_cli(&args), CliAction::PrintVersion);
+    }
+
+    #[test]
+    fn test_parse_cli_unknown_arg_falls_through() {
+        let args = vec!["funke", "bogus"];
+        assert_eq!(parse_cli(&args), CliAction::RunTui);
+    }
+
+    #[test]
+    fn test_version_string_format() {
+        let s = version_string();
+        assert!(s.starts_with("funke "), "unexpected prefix in {s}");
+        assert!(
+            s.contains(env!("CARGO_PKG_VERSION")),
+            "missing CARGO_PKG_VERSION in {s}"
+        );
     }
 }

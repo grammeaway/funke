@@ -33,12 +33,20 @@ If you have Rust and Cargo installed, you can install Fünke directly from the c
 cargo install --path .
 ```
 
+### Verifying the installation
+
+Once installed, confirm the binary is on your PATH and runnable:
+
+```bash
+funke version
+```
+
+This should print something like `funke 1.0.1`. If you get "command not found" or a stale version, the binary isn't where your shell is looking, or an older copy is shadowing the new one.
+
 ## TODO / Roadmap
 
 - [ ] Fünke CLI, for people who prefer command line tools
 
 - [ ] Automate new releases with GitHub Actions
-
-- [ ] `funke version` command to display current version, and validate successful installation
 ## AI Usage Disclosure 
 This project was developed with the assistance of AI tools, specifically Claude Code managed through a Ralph loop. 
