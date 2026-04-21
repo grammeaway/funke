@@ -47,6 +47,5 @@ This should print something like `funke 1.0.1`. If you get "command not found" o
 
 - [ ] Fünke CLI, for people who prefer command line tools
 
-- [ ] Automate new releases with GitHub Actions
 ## AI Usage Disclosure 
 This project was developed with the assistance of AI tools, specifically Claude Code managed through a Ralph loop. 
