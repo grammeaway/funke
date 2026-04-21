@@ -123,6 +123,8 @@ pub struct App {
     pub show_detail: bool,
     pub profile_menu: Option<ProfileMenu>,
     pub show_help: bool,
+    pub search_query: String,
+    pub search_input_active: bool,
 }
 
 impl App {
@@ -144,11 +146,62 @@ impl App {
             show_detail: false,
             profile_menu: None,
             show_help: false,
+            search_query: String::new(),
+            search_input_active: false,
         }
     }
 
     fn total_devices(&self) -> usize {
         self.devices.len() + self.discovered_devices.len()
+    }
+
+    fn is_filter_active(&self) -> bool {
+        !self.search_query.is_empty()
+    }
+
+    fn matches_filter(&self, d: &DeviceInfo) -> bool {
+        if !self.is_filter_active() {
+            return true;
+        }
+        let q = self.search_query.to_lowercase();
+        let name_hit = d
+            .name
+            .as_deref()
+            .map(|n| n.to_lowercase().contains(&q))
+            .unwrap_or(false);
+        let addr_hit = d.address.to_lowercase().contains(&q);
+        name_hit || addr_hit
+    }
+
+    /// Devices visible under the current filter, in display order:
+    /// all matching known devices, then all matching discovered devices.
+    /// The boolean is `is_discovered`, used for styling.
+    pub fn visible_devices(&self) -> Vec<(&DeviceInfo, bool)> {
+        self.devices
+            .iter()
+            .map(|d| (d, false))
+            .chain(self.discovered_devices.iter().map(|d| (d, true)))
+            .filter(|(d, _)| self.matches_filter(d))
+            .collect()
+    }
+
+    fn visible_count(&self) -> usize {
+        self.visible_devices().len()
+    }
+
+    fn clamp_selection(&mut self) {
+        let count = self.visible_count();
+        match self.list_state.selected() {
+            None if count > 0 => self.list_state.select(Some(0)),
+            Some(i) if i >= count => {
+                if count == 0 {
+                    self.list_state.select(None);
+                } else {
+                    self.list_state.select(Some(count - 1));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Handle a key event. Returns an action for the event loop to process.
@@ -250,6 +303,34 @@ impl App {
             };
         }
 
+        // If the search input is active, chars feed the query buffer.
+        // Enter closes the input (filter persists), Esc closes and clears.
+        if self.search_input_active {
+            return match key.code {
+                KeyCode::Enter => {
+                    self.search_input_active = false;
+                    Action::None
+                }
+                KeyCode::Esc => {
+                    self.search_input_active = false;
+                    self.search_query.clear();
+                    self.clamp_selection();
+                    Action::None
+                }
+                KeyCode::Backspace => {
+                    self.search_query.pop();
+                    self.clamp_selection();
+                    Action::None
+                }
+                KeyCode::Char(c) => {
+                    self.search_query.push(c);
+                    self.clamp_selection();
+                    Action::None
+                }
+                _ => Action::None,
+            };
+        }
+
         // If no adapter is present, only allow quit, help, and power on
         if self.adapter.is_none() {
             return match key.code {
@@ -282,6 +363,15 @@ impl App {
             KeyCode::Char('t') => Action::TrustToggle,
             KeyCode::Char('i') => Action::ToggleDetail,
             KeyCode::Char('a') => Action::OpenProfiles,
+            KeyCode::Char('/') => {
+                self.search_input_active = true;
+                Action::None
+            }
+            KeyCode::Esc if !self.search_query.is_empty() => {
+                self.search_query.clear();
+                self.clamp_selection();
+                Action::None
+            }
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('o') => {
                 if self.adapter.as_ref().is_some_and(|a| a.powered) {
@@ -312,7 +402,7 @@ impl App {
     }
 
     fn select_next(&mut self) {
-        let total = self.total_devices();
+        let total = self.visible_count();
         if total == 0 {
             return;
         }
@@ -325,7 +415,7 @@ impl App {
     }
 
     fn select_previous(&mut self) {
-        let total = self.total_devices();
+        let total = self.visible_count();
         if total == 0 {
             return;
         }
@@ -337,13 +427,13 @@ impl App {
     }
 
     fn select_first(&mut self) {
-        if self.total_devices() > 0 {
+        if self.visible_count() > 0 {
             self.list_state.select(Some(0));
         }
     }
 
     fn select_last(&mut self) {
-        let total = self.total_devices();
+        let total = self.visible_count();
         if total > 0 {
             self.list_state.select(Some(total - 1));
         }
@@ -358,20 +448,13 @@ impl App {
             return;
         }
         self.discovered_devices.push(device);
-        // If nothing was selected and this is the first device overall, select it
-        if self.list_state.selected().is_none() && self.devices.is_empty() {
-            self.list_state.select(Some(0));
-        }
+        self.clamp_selection();
     }
 
-    /// Returns the currently selected device, if any.
+    /// Returns the currently selected device, if any. Honors the active filter.
     pub fn selected_device(&self) -> Option<&DeviceInfo> {
         let idx = self.list_state.selected()?;
-        if idx < self.devices.len() {
-            Some(&self.devices[idx])
-        } else {
-            self.discovered_devices.get(idx - self.devices.len())
-        }
+        self.visible_devices().get(idx).map(|(d, _)| *d)
     }
 
     /// Update the `connected` status of a device by address.
@@ -429,14 +512,7 @@ impl App {
     /// Clear all discovered devices and adjust selection if needed.
     pub fn clear_discovered_devices(&mut self) {
         self.discovered_devices.clear();
-        let total = self.devices.len();
-        if total == 0 {
-            self.list_state.select(None);
-        } else if let Some(i) = self.list_state.selected()
-            && i >= total
-        {
-            self.list_state.select(Some(total - 1));
-        }
+        self.clamp_selection();
     }
 }
 
@@ -510,12 +586,18 @@ fn help_bar_text(app: &App) -> String {
 
 /// Draw the UI layout.
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
-    let chunks = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(frame.area());
+    let show_search_bar = app.search_input_active || !app.search_query.is_empty();
+    let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)];
+    if show_search_bar {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1)); // help bar
+    constraints.push(Constraint::Length(1)); // status bar
+    let chunks = Layout::vertical(constraints).split(frame.area());
+    let list_chunk = chunks[0];
+    let search_chunk = if show_search_bar { Some(chunks[1]) } else { None };
+    let help_chunk = chunks[if show_search_bar { 2 } else { 1 }];
+    let status_chunk = chunks[if show_search_bar { 3 } else { 2 }];
 
     // Device list area
     let device_block = Block::default()
@@ -531,7 +613,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 ListItem::new("Press 'o' to unblock via rfkill"),
             ])
             .block(device_block);
-            frame.render_widget(no_adapter_list, chunks[0]);
+            frame.render_widget(no_adapter_list, list_chunk);
         }
         Some(adapter) if !adapter.powered => {
             let off_list = List::new(vec![
@@ -539,26 +621,36 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 ListItem::new("Press 'o' to power on"),
             ])
             .block(device_block);
-            frame.render_widget(off_list, chunks[0]);
+            frame.render_widget(off_list, list_chunk);
         }
         _ if !has_devices => {
             let empty_list = List::new(vec![ListItem::new("No devices")])
                 .block(device_block);
-            frame.render_widget(empty_list, chunks[0]);
+            frame.render_widget(empty_list, list_chunk);
         }
         _ => {
-            let mut items: Vec<ListItem> = app
-                .devices
-                .iter()
-                .map(|d| ListItem::new(format_device_line(d, false)))
-                .collect();
-
-            for d in &app.discovered_devices {
-                items.push(
-                    ListItem::new(format_device_line(d, true))
-                        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-                );
-            }
+            let visible = app.visible_devices();
+            let items: Vec<ListItem> = if visible.is_empty() && app.is_filter_active() {
+                vec![ListItem::new("No devices match filter").style(
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                )]
+            } else {
+                visible
+                    .iter()
+                    .map(|(d, is_discovered)| {
+                        let item = ListItem::new(format_device_line(d, *is_discovered));
+                        if *is_discovered {
+                            item.style(
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC),
+                            )
+                        } else {
+                            item
+                        }
+                    })
+                    .collect()
+            };
 
             let list = List::new(items)
                 .block(device_block)
@@ -568,8 +660,24 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("▸ ");
-            frame.render_stateful_widget(list, chunks[0], &mut app.list_state);
+            frame.render_stateful_widget(list, list_chunk, &mut app.list_state);
         }
+    }
+
+    // Search bar (conditional)
+    if let Some(area) = search_chunk {
+        let line = if app.search_input_active {
+            Line::from(format!("/{}_", app.search_query))
+                .style(Style::default().fg(Color::Yellow))
+        } else {
+            Line::from(format!(
+                " Filter: {}   [/ to edit · Esc to clear]",
+                app.search_query
+            ))
+            .style(Style::default().fg(Color::DarkGray))
+        };
+        let para = ratatui::widgets::Paragraph::new(line);
+        frame.render_widget(para, area);
     }
 
     // Confirmation dialog overlay
@@ -770,8 +878,9 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Line::from("  o            Toggle adapter power"),
             Line::from("  j/k or Up/Down  Navigate device list"),
             Line::from("  g / G        Jump to first / last"),
+            Line::from("  /            Search devices (name or address)"),
             Line::from("  ?            Toggle this help"),
-            Line::from("  Esc          Close overlay / Cancel"),
+            Line::from("  Esc          Close overlay / Cancel / Clear filter"),
             Line::from(""),
             Line::from("[?/Esc] Close"),
         ];
@@ -804,7 +913,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let help_text = help_bar_text(app);
     let help_bar = ratatui::widgets::Paragraph::new(Line::from(format!(" {help_text}")))
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(help_bar, chunks[1]);
+    frame.render_widget(help_bar, help_chunk);
 
     // Status bar
     let status_text = if let Some(adapter) = &app.adapter {
@@ -827,7 +936,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     };
     let status_bar = ratatui::widgets::Paragraph::new(Line::from(status_text))
         .style(Style::default().fg(Color::White).bg(Color::DarkGray));
-    frame.render_widget(status_bar, chunks[2]);
+    frame.render_widget(status_bar, status_chunk);
 }
 
 /// Run the main TUI event loop.
@@ -3117,5 +3226,266 @@ mod tests {
         // Now keys should work normally
         let action = app.handle_key(make_key(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(action, Action::ToggleScan);
+    }
+
+    // -------------------- Search feature tests --------------------
+
+    #[test]
+    fn test_slash_opens_search_input() {
+        let mut app = App::new(test_adapter(), test_devices());
+        assert!(!app.search_input_active);
+        let action = app.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(action, Action::None);
+        assert!(app.search_input_active);
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn test_search_typing_updates_query() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_input_active = true;
+        app.handle_key(make_key(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('b'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(app.search_query, "abc");
+        assert!(app.search_input_active);
+    }
+
+    #[test]
+    fn test_search_backspace_pops_char() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_input_active = true;
+        app.search_query = "abc".to_string();
+        app.handle_key(make_key(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.search_query, "ab");
+    }
+
+    #[test]
+    fn test_search_enter_closes_input_keeps_filter() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_input_active = true;
+        app.search_query = "bose".to_string();
+        app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.search_input_active);
+        assert_eq!(app.search_query, "bose");
+    }
+
+    #[test]
+    fn test_search_esc_clears_and_closes() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_input_active = true;
+        app.search_query = "bose".to_string();
+        app.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.search_input_active);
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn test_esc_in_main_clears_active_filter() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "speak".to_string();
+        // Input is not active; filter is applied.
+        app.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.search_query, "");
+        assert!(!app.search_input_active);
+    }
+
+    #[test]
+    fn test_filter_name_substring_case_insensitive() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "KEYBOARD".to_string();
+        let visible: Vec<&str> = app
+            .visible_devices()
+            .iter()
+            .map(|(d, _)| d.name.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(visible, vec!["Keyboard"]);
+    }
+
+    #[test]
+    fn test_filter_address_substring_match() {
+        let mut app = App::new(test_adapter(), test_devices());
+        // The nameless device has address FF:EE:DD:CC:BB:AA.
+        app.search_query = "dd:cc".to_string();
+        let visible = app.visible_devices();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].0.address, "FF:EE:DD:CC:BB:AA");
+    }
+
+    #[test]
+    fn test_filter_includes_discovered_devices() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.add_discovered_device(DeviceInfo {
+            name: Some("Speaker Mini".to_string()),
+            address: "DD:DD:DD:DD:DD:DD".to_string(),
+            paired: false,
+            connected: false,
+            trusted: false,
+            icon: None,
+            uuids: vec![],
+        });
+        app.search_query = "speaker".to_string();
+        let visible = app.visible_devices();
+        // Known "Speaker" and discovered "Speaker Mini" should both match.
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().any(|(d, disc)| !*disc && d.address == "11:22:33:44:55:66"));
+        assert!(visible.iter().any(|(d, disc)| *disc && d.address == "DD:DD:DD:DD:DD:DD"));
+    }
+
+    #[test]
+    fn test_filter_excludes_non_matching() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "xyz-no-match".to_string();
+        assert!(app.visible_devices().is_empty());
+        assert_eq!(app.visible_count(), 0);
+    }
+
+    #[test]
+    fn test_selected_device_respects_filter() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "keyboard".to_string();
+        app.list_state.select(Some(0));
+        let selected = app.selected_device().expect("expected a selection");
+        assert_eq!(selected.name.as_deref(), Some("Keyboard"));
+    }
+
+    #[test]
+    fn test_navigation_on_filtered_list_wraps_correctly() {
+        let mut app = App::new(test_adapter(), test_devices());
+        // Query matching two of the three devices (Speaker, Keyboard share no common
+        // substring, so use address-based: both test_devices have "aa" after lowercase?
+        // Safer: filter to two known devices by name substring.
+        app.devices.push(DeviceInfo {
+            name: Some("Speakerphone".to_string()),
+            address: "22:22:22:22:22:22".to_string(),
+            paired: true,
+            connected: false,
+            trusted: false,
+            icon: None,
+            uuids: vec![],
+        });
+        app.search_query = "speaker".to_string();
+        app.list_state.select(Some(0));
+        assert_eq!(app.visible_count(), 2);
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(1));
+        // Third j should wrap to 0, not go to 2 (which exists in unfiltered list).
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_filter_change_clamps_selection() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.list_state.select(Some(2));
+        assert_eq!(app.visible_count(), 3);
+        app.search_input_active = true;
+        app.handle_key(make_key(KeyCode::Char('s'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('p'), KeyModifiers::NONE));
+        // Query "sp" matches only the Speaker (one visible device).
+        assert_eq!(app.search_query, "sp");
+        assert_eq!(app.visible_count(), 1);
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_vim_keys_literal_in_search_input() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.list_state.select(Some(1));
+        app.search_input_active = true;
+        app.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('g'), KeyModifiers::NONE));
+        app.handle_key(make_key(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.search_query, "jkgG");
+        // Selection should not have moved from 1 (though it may have been clamped
+        // if filter narrowed the list below index 1). Given the test_devices set,
+        // "jkgG" matches nothing, so visible_count is 0 and selection is None.
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_actions_in_main_work_under_filter() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "keyboard".to_string();
+        app.list_state.select(Some(0));
+        let action = app.handle_key(make_key(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(action, Action::Pair);
+        assert_eq!(
+            app.selected_device().unwrap().address,
+            "AA:BB:CC:DD:EE:FF"
+        );
+    }
+
+    #[test]
+    fn test_help_overlay_documents_search() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.show_help = true;
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains('/'), "help overlay should show `/`");
+        assert!(content.to_lowercase().contains("search"),
+            "help overlay should mention search");
+    }
+
+    #[test]
+    fn test_add_discovered_under_filter_does_not_break_selection() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "speaker".to_string();
+        app.list_state.select(Some(0));
+        // A non-matching discovered device arrives. Filtered view stays at 1.
+        app.add_discovered_device(DeviceInfo {
+            name: Some("Random Headset".to_string()),
+            address: "77:77:77:77:77:77".to_string(),
+            paired: false,
+            connected: false,
+            trusted: false,
+            icon: None,
+            uuids: vec![],
+        });
+        assert_eq!(app.visible_count(), 1);
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.selected_device().unwrap().name.as_deref(), Some("Speaker"));
+    }
+
+    #[test]
+    fn test_draw_search_prompt_while_typing() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_input_active = true;
+        app.search_query = "abc".to_string();
+        let backend = ratatui::backend::TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains("/abc"), "expected /abc in buffer, got: {content}");
+    }
+
+    #[test]
+    fn test_draw_filter_indicator_when_applied() {
+        let mut app = App::new(test_adapter(), test_devices());
+        app.search_query = "speaker".to_string();
+        app.search_input_active = false;
+        let backend = ratatui::backend::TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = buffer_content(terminal.backend());
+        assert!(content.contains("Filter:"), "expected Filter: in buffer");
+        assert!(content.contains("speaker"), "expected query in buffer");
+    }
+
+    #[test]
+    fn test_draw_no_search_ui_when_inactive() {
+        let mut app = App::new(test_adapter(), test_devices());
+        let backend = ratatui::backend::TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = buffer_content(terminal.backend());
+        assert!(!content.contains("Filter:"));
+        // Check that a "/<something>" search-prompt pattern isn't present in
+        // the default view. The '/' character may appear elsewhere (unlikely),
+        // so we assert on the bare "Filter:" pill and the typing-prompt shape.
+        assert!(!content.contains("/abc"));
     }
 }
