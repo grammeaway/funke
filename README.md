@@ -18,6 +18,8 @@ TUI built using [ratatui](https://github.com/ratatui/ratatui).
 ### Pre-built Binaries
 Pre-built binaries for Linux, Mac, and Windows are available on the [releases page](https://github.com/grammeaway/funke/releases). Download the appropriate version for your system, and move the binary to a directory in your PATH.
 
+> **Note on RISC-V:** A `riscv64gc-unknown-linux-gnu` build is published as a best-effort artifact. It is cross-compiled in CI and is not exercised on real RISC-V hardware, so it depends on a working BlueZ + PulseAudio/PipeWire stack on your distro. If it doesn't work for you, please open an issue or build from source.
+
 ### Building from Source
 To build Fünke from source, you need to have Rust installed. You can install Rust using [rustup](https://rustup.rs/). Once you have Rust set up, clone the repository and build the project by running:
 

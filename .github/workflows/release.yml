@@ -17,6 +17,9 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             linker: gcc-aarch64-linux-gnu
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            linker: gcc-riscv64-linux-gnu
           - target: x86_64-pc-windows-gnu
             os: ubuntu-latest
             linker: gcc-mingw-w64-x86-64
@@ -38,6 +41,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
       - name: Package
         shell: bash
